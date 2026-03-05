@@ -95,6 +95,11 @@
             color: #666;
             margin: 10px 0;
         }
+        .warning {
+            color: #ff9800;
+            margin: 10px 0;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
@@ -109,7 +114,7 @@
         </div>
 
         <input type="text" id="user_id" class="input-field" placeholder="أدخل معرف المستخدم" dir="ltr">
-        <small style="color: #666;">يرجى التأكد من المعرف قبل الإرسال</small>
+        <div class="warning">يرجى التأكد من المعرف قبل الإرسال</div>
 
         <div class="error" id="error"></div>
 
@@ -126,7 +131,6 @@
         // قراءة المعاملات من الرابط
         const urlParams = new URLSearchParams(window.location.search);
         const productId = urlParams.get('product_id');
-        const orderUuid = urlParams.get('order_uuid');
         const telegramUserId = urlParams.get('user_id');
 
         // عناصر الصفحة
@@ -143,71 +147,32 @@
         // متغيرات
         let minQty = 1;
         let maxQty = 999999;
-        let currentPrice = 0;
+        let unitPrice = 0;
         const apiToken = '504b8ec6bc25914d65d0013e878194f37a415e60e70dd4d8';
 
-        // دالة إنشاء طلب API
-        async function apiRequest(endpoint, method = 'GET', params = {}) {
-            const url = new URL(`https://api.alragheb-store.com${endpoint}`);
-            if (method === 'GET') {
-                Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
-            }
-            
-            const options = {
-                method: method,
-                headers: {
-                    'api-token': apiToken
-                }
-            };
-            
-            if (method === 'POST') {
-                options.body = JSON.stringify(params);
-                options.headers['Content-Type'] = 'application/json';
-            }
-            
-            const response = await fetch(url, options);
-            return await response.json();
-        }
-
         // دالة حساب السعر النهائي (مع 4% ربح وتقريب لأعلى)
-        function calculateFinalPrice(price) {
-            return Math.ceil(price * 100) / 100;
+        function calculateFinalPrice(price, quantity) {
+            let total = price * quantity * 1.04;
+            return Math.ceil(total * 100) / 100;
         }
 
-        // دالة تحديث السعر من الجلسة
-        async function updatePrice() {
-            const qty = parseInt(quantityInput.value);
-            if (!qty || qty < minQty || qty > maxQty) {
-                return;
-            }
-
-            try {
-                // تحديث الجلسة بالكمية الجديدة
-                const updateData = await apiRequest('/client/api/newOrder/' + productId + '/params', 'POST', {
-                    qty: qty,
-                    order_uuid: orderUuid
-                });
-
-                if (updateData.status === 'OK' && updateData.data) {
-                    // السعر موجود في بيانات الطلب
-                    currentPrice = parseFloat(updateData.data.amount) || 0;
-                    const finalPrice = calculateFinalPrice(currentPrice);
-                    totalPriceEl.textContent = '$' + finalPrice.toFixed(2);
-                }
-            } catch (error) {
-                console.error('خطأ في تحديث السعر:', error);
-            }
-        }
-
-        // تحميل بيانات المنتج وإنشاء الجلسة
+        // جلب بيانات المنتج فقط (بدون إنشاء طلب)
         async function loadProduct() {
             loadingEl.style.display = 'block';
             
             try {
-                // جلب بيانات المنتج
-                const productData = await apiRequest('/client/api/products', 'GET', { products_id: productId });
-                const product = productData[0];
+                const response = await fetch(`https://api.alragheb-store.com/client/api/products?products_id=${productId}`, {
+                    headers: { 'api-token': apiToken }
+                });
+                const data = await response.json();
+                const product = data[0];
+                
+                if (!product) {
+                    throw new Error('المنتج غير موجود');
+                }
+
                 productNameEl.textContent = product.name;
+                unitPrice = parseFloat(product.price) || 0;
 
                 // تحليل حدود الكمية
                 const qtyValues = product.qty_values;
@@ -238,10 +203,10 @@
                 quantityInput.min = minQty;
                 quantityInput.max = maxQty;
                 quantityInput.value = minQty;
-                limitsEl.textContent = `العدد: من ${minQty} إلى ${maxQty}`;
+                limitsEl.textContent = `الكمية: من ${minQty} إلى ${maxQty}`;
 
                 // تحديث السعر لأول مرة
-                await updatePrice();
+                updatePriceDisplay();
 
             } catch (error) {
                 console.error('خطأ:', error);
@@ -251,26 +216,29 @@
             }
         }
 
-        // عند تغيير الكمية
-        quantityInput.addEventListener('input', function() {
-            const qty = parseInt(this.value);
-            if (qty && qty >= minQty && qty <= maxQty) {
-                updatePrice();
+        function updatePriceDisplay() {
+            const qty = parseInt(quantityInput.value) || minQty;
+            if (unitPrice > 0) {
+                const finalPrice = calculateFinalPrice(unitPrice, qty);
+                totalPriceEl.textContent = '$' + finalPrice.toFixed(2);
             } else {
-                totalPriceEl.textContent = '$0.00';
+                // إذا كان السعر 0، نعرض رسالة (السعر سيحسب في البوت)
+                totalPriceEl.textContent = 'سيتم حسابه';
             }
-        });
+        }
+
+        // عند تغيير الكمية
+        quantityInput.addEventListener('input', updatePriceDisplay);
 
         // عند فقدان التركيز من حقل الكمية
         quantityInput.addEventListener('blur', function() {
             let qty = parseInt(this.value);
             if (!qty || qty < minQty) {
                 this.value = minQty;
-                updatePrice();
             } else if (qty > maxQty) {
                 this.value = maxQty;
-                updatePrice();
             }
+            updatePriceDisplay();
         });
 
         function showError(message) {
@@ -282,7 +250,7 @@
         }
 
         // شراء
-        buyBtn.addEventListener('click', async () => {
+        buyBtn.addEventListener('click', () => {
             const qty = parseInt(quantityInput.value);
             const id = userIdInput.value.trim();
 
@@ -295,30 +263,13 @@
                 return;
             }
 
-            try {
-                // تحديث الجلسة بالكمية و ID
-                const updateData = await apiRequest('/client/api/newOrder/' + productId + '/params', 'POST', {
-                    qty: qty,
-                    order_uuid: orderUuid,
-                    user_id: id
-                });
-
-                if (updateData.status === 'OK') {
-                    // إرسال تأكيد للبوت
-                    tg.sendData(JSON.stringify({
-                        order_uuid: orderUuid,
-                        product_id: productId,
-                        quantity: qty,
-                        user_id_input: id
-                    }));
-                    tg.close();
-                } else {
-                    showError('فشل في تحديث الطلب');
-                }
-            } catch (error) {
-                console.error('خطأ:', error);
-                showError('حدث خطأ في إتمام الطلب');
-            }
+            // إرسال البيانات فقط إلى البوت (لا ننشئ طلب في API)
+            tg.sendData(JSON.stringify({
+                product_id: productId,
+                quantity: qty,
+                user_id_input: id
+            }));
+            tg.close();
         });
 
         // إلغاء
@@ -327,8 +278,8 @@
         });
 
         // بدء التحميل
-        if (!productId || !orderUuid) {
-            productNameEl.textContent = 'خطأ: معاملات ناقصة';
+        if (!productId) {
+            productNameEl.textContent = 'خطأ: معرف المنتج ناقص';
         } else {
             loadProduct();
         }
