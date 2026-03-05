@@ -34,6 +34,12 @@
             border-radius: 8px;
             margin: 15px 0;
         }
+        .total-price {
+            font-size: 28px;
+            font-weight: bold;
+            color: var(--tg-theme-button-color, #0088cc);
+            margin: 10px 0;
+        }
         .quantity-input {
             width: 100%;
             padding: 12px;
@@ -43,12 +49,6 @@
             text-align: center;
             margin-bottom: 10px;
             box-sizing: border-box;
-        }
-        .price-display {
-            font-size: 28px;
-            font-weight: bold;
-            color: var(--tg-theme-button-color, #0088cc);
-            margin: 10px 0;
         }
         .input-field {
             width: 100%;
@@ -90,19 +90,26 @@
             margin: 10px 0;
             display: none;
         }
+        .loading {
+            display: none;
+            color: #666;
+            margin: 10px 0;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="product-name" id="product-name">جاري تحميل المنتج...</div>
+        <div class="loading" id="loading">جاري التحميل...</div>
 
         <div class="price-section">
-            <div class="price-display" id="price">$0.00</div>
+            <div class="total-price" id="total-price">$0.00</div>
             <input type="number" id="quantity" class="quantity-input" placeholder="أدخل الكمية" min="1" max="999999" value="">
             <div class="limits" id="limits"></div>
         </div>
 
-        <input type="text" id="user_id" class="input-field" placeholder="أدخل ID الخاص بك" dir="ltr">
+        <input type="text" id="user_id" class="input-field" placeholder="أدخل معرف المستخدم" dir="ltr">
+        <small style="color: #666;">يرجى التأكد من المعرف قبل الإرسال</small>
 
         <div class="error" id="error"></div>
 
@@ -116,58 +123,106 @@
         const tg = window.Telegram.WebApp;
         tg.expand();
 
+        // قراءة المعاملات من الرابط
         const urlParams = new URLSearchParams(window.location.search);
         const productId = urlParams.get('product_id');
+        const orderUuid = urlParams.get('order_uuid');
         const telegramUserId = urlParams.get('user_id');
 
+        // عناصر الصفحة
         const productNameEl = document.getElementById('product-name');
+        const totalPriceEl = document.getElementById('total-price');
         const quantityInput = document.getElementById('quantity');
-        const priceEl = document.getElementById('price');
         const userIdInput = document.getElementById('user_id');
         const limitsEl = document.getElementById('limits');
         const errorEl = document.getElementById('error');
+        const loadingEl = document.getElementById('loading');
         const buyBtn = document.getElementById('buy-btn');
         const cancelBtn = document.getElementById('cancel-btn');
 
-        let product = null;
+        // متغيرات
         let minQty = 1;
         let maxQty = 999999;
-        let apiToken = '504b8ec6bc25914d65d0013e878194f37a415e60e70dd4d8';
+        let currentPrice = 0;
+        const apiToken = '504b8ec6bc25914d65d0013e878194f37a415e60e70dd4d8';
 
-        // دالة لحساب السعر النهائي (نفس طريقة البوت)
-        function calculateFinalPrice(originalPrice, quantity) {
-            if (originalPrice == 0) return 0;
-            // إضافة 4% ربح
-            let priceWithMarkup = originalPrice * quantity * 1.04;
-            // تقريب لأعلى لمنزلتين عشريتين
-            return Math.ceil(priceWithMarkup * 100) / 100;
+        // دالة إنشاء طلب API
+        async function apiRequest(endpoint, method = 'GET', params = {}) {
+            const url = new URL(`https://api.alragheb-store.com${endpoint}`);
+            if (method === 'GET') {
+                Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
+            }
+            
+            const options = {
+                method: method,
+                headers: {
+                    'api-token': apiToken
+                }
+            };
+            
+            if (method === 'POST') {
+                options.body = JSON.stringify(params);
+                options.headers['Content-Type'] = 'application/json';
+            }
+            
+            const response = await fetch(url, options);
+            return await response.json();
         }
 
-        // جلب بيانات المنتج من API
-        async function fetchProduct() {
+        // دالة حساب السعر النهائي (مع 4% ربح وتقريب لأعلى)
+        function calculateFinalPrice(price) {
+            return Math.ceil(price * 100) / 100;
+        }
+
+        // دالة تحديث السعر من الجلسة
+        async function updatePrice() {
+            const qty = parseInt(quantityInput.value);
+            if (!qty || qty < minQty || qty > maxQty) {
+                return;
+            }
+
             try {
-                const response = await fetch(`https://api.alragheb-store.com/client/api/products?products_id=${productId}`, {
-                    headers: {
-                        'api-token': apiToken
-                    }
+                // تحديث الجلسة بالكمية الجديدة
+                const updateData = await apiRequest('/client/api/newOrder/' + productId + '/params', 'POST', {
+                    qty: qty,
+                    order_uuid: orderUuid
                 });
-                const data = await response.json();
-                product = data[0];
+
+                if (updateData.status === 'OK' && updateData.data) {
+                    // السعر موجود في بيانات الطلب
+                    currentPrice = parseFloat(updateData.data.amount) || 0;
+                    const finalPrice = calculateFinalPrice(currentPrice);
+                    totalPriceEl.textContent = '$' + finalPrice.toFixed(2);
+                }
+            } catch (error) {
+                console.error('خطأ في تحديث السعر:', error);
+            }
+        }
+
+        // تحميل بيانات المنتج وإنشاء الجلسة
+        async function loadProduct() {
+            loadingEl.style.display = 'block';
+            
+            try {
+                // جلب بيانات المنتج
+                const productData = await apiRequest('/client/api/products', 'GET', { products_id: productId });
+                const product = productData[0];
                 productNameEl.textContent = product.name;
 
-                // تحليل qty_values
-                if (product.qty_values) {
-                    if (typeof product.qty_values === 'object') {
-                        if (Array.isArray(product.qty_values)) {
-                            minQty = Math.min(...product.qty_values);
-                            maxQty = Math.max(...product.qty_values);
+                // تحليل حدود الكمية
+                const qtyValues = product.qty_values;
+                if (qtyValues) {
+                    if (typeof qtyValues === 'object') {
+                        if (Array.isArray(qtyValues)) {
+                            minQty = Math.min(...qtyValues);
+                            maxQty = Math.max(...qtyValues);
                         } else {
-                            minQty = product.qty_values.min || 1;
-                            maxQty = product.qty_values.max || 999999;
+                            minQty = qtyValues.min || 1;
+                            maxQty = qtyValues.max || 999999;
                         }
-                    } else if (typeof product.qty_values === 'string') {
+                    } else if (typeof qtyValues === 'string') {
                         try {
-                            const parsed = JSON.parse(product.qty_values);
+                            const parsed = JSON.parse(qtyValues);
                             if (Array.isArray(parsed)) {
                                 minQty = Math.min(...parsed);
                                 maxQty = Math.max(...parsed);
@@ -175,9 +230,7 @@
                                 minQty = parsed.min;
                                 maxQty = parsed.max;
                             }
-                        } catch (e) {
-                            console.error('خطأ في تحليل qty_values:', e);
-                        }
+                        } catch (e) {}
                     }
                 }
 
@@ -185,73 +238,40 @@
                 quantityInput.min = minQty;
                 quantityInput.max = maxQty;
                 quantityInput.value = minQty;
-                limitsEl.textContent = `الحد الأدنى: ${minQty} - الحد الأقصى: ${maxQty}`;
+                limitsEl.textContent = `العدد: من ${minQty} إلى ${maxQty}`;
 
-                // تحديث السعر عند التحميل
-                updatePrice();
+                // تحديث السعر لأول مرة
+                await updatePrice();
 
             } catch (error) {
-                console.error('خطأ في جلب المنتج:', error);
+                console.error('خطأ:', error);
                 productNameEl.textContent = 'حدث خطأ في تحميل المنتج';
+            } finally {
+                loadingEl.style.display = 'none';
             }
         }
 
-        // تحديث السعر عن طريق API (للحصول على السعر الأصلي)
-        async function updatePrice() {
-            if (!product) return;
-            
-            const qty = parseInt(quantityInput.value);
-            if (!qty || qty < minQty || qty > maxQty) {
-                priceEl.textContent = '$0.00';
-                return;
-            }
-
-            // المنتجات ذات السعر 0 تحتاج إلى استدعاء API خاص للحصول على السعر
-            // لكن API الحالي لا يوفر endpoint منفصل لحساب السعر
-            // لذلك سنستخدم السعر الأساسي من المنتج
-            const originalPrice = parseFloat(product.price) || 0;
-            
-            if (originalPrice > 0) {
-                // إذا كان للمنتج سعر ثابت
-                const finalPrice = calculateFinalPrice(originalPrice, qty);
-                priceEl.textContent = `$${finalPrice.toFixed(2)}`;
+        // عند تغيير الكمية
+        quantityInput.addEventListener('input', function() {
+            const qty = parseInt(this.value);
+            if (qty && qty >= minQty && qty <= maxQty) {
+                updatePrice();
             } else {
-                // إذا كان السعر 0، فهذا يعني أن السعر يعتمد على الكمية
-                // في هذه الحالة، نفترض أن API يعيد السعر الصحيح عند استدعاء products
-                // لكن هذا غير كافٍ، لذا سنستخدم معادلة تقريبية
-                // ملاحظة: هذا حل مؤقت، الحل الأمثل هو وجود endpoint خاص بحساب السعر
-                
-                // قيمة افتراضية مؤقتة (يمكن تعديلها حسب المنتج)
-                const unitPrice = 0.00084; // سعر الوحدة التقريبي
-                const finalPrice = calculateFinalPrice(unitPrice, qty);
-                priceEl.textContent = `$${finalPrice.toFixed(2)}`;
-                
-                // إذا كان هناك endpoint حقيقي لحساب السعر، استخدم هذا الكود بدلاً من السابق:
-                /*
-                try {
-                    // هذا مثال افتراضي، قد لا يكون موجوداً
-                    const response = await fetch(`https://api.alragheb-store.com/client/api/calculate-price`, {
-                        method: 'POST',
-                        headers: {
-                            'api-token': apiToken,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            product_id: productId,
-                            quantity: qty
-                        })
-                    });
-                    const data = await response.json();
-                    const finalPrice = calculateFinalPrice(data.price, 1);
-                    priceEl.textContent = `$${finalPrice.toFixed(2)}`;
-                } catch (e) {
-                    console.error('خطأ في حساب السعر:', e);
-                }
-                */
+                totalPriceEl.textContent = '$0.00';
             }
-        }
+        });
 
-        quantityInput.addEventListener('input', updatePrice);
+        // عند فقدان التركيز من حقل الكمية
+        quantityInput.addEventListener('blur', function() {
+            let qty = parseInt(this.value);
+            if (!qty || qty < minQty) {
+                this.value = minQty;
+                updatePrice();
+            } else if (qty > maxQty) {
+                this.value = maxQty;
+                updatePrice();
+            }
+        });
 
         function showError(message) {
             errorEl.textContent = message;
@@ -261,37 +281,57 @@
             }, 3000);
         }
 
-        buyBtn.addEventListener('click', () => {
+        // شراء
+        buyBtn.addEventListener('click', async () => {
             const qty = parseInt(quantityInput.value);
             const id = userIdInput.value.trim();
 
-            if (!qty) {
-                showError('الرجاء إدخال الكمية');
-                return;
-            }
-            if (qty < minQty || qty > maxQty) {
-                showError(`الكمية يجب أن تكون بين ${minQty} و ${maxQty}`);
+            if (!qty || qty < minQty || qty > maxQty) {
+                showError(`الرجاء إدخال كمية صحيحة (${minQty}-${maxQty})`);
                 return;
             }
             if (!id) {
-                showError('الرجاء إدخال ID الخاص بك');
+                showError('الرجاء إدخال معرف المستخدم');
                 return;
             }
 
-            // إرسال البيانات إلى البوت
-            tg.sendData(JSON.stringify({
-                product_id: productId,
-                quantity: qty,
-                user_id_input: id
-            }));
-            tg.close();
+            try {
+                // تحديث الجلسة بالكمية و ID
+                const updateData = await apiRequest('/client/api/newOrder/' + productId + '/params', 'POST', {
+                    qty: qty,
+                    order_uuid: orderUuid,
+                    user_id: id
+                });
+
+                if (updateData.status === 'OK') {
+                    // إرسال تأكيد للبوت
+                    tg.sendData(JSON.stringify({
+                        order_uuid: orderUuid,
+                        product_id: productId,
+                        quantity: qty,
+                        user_id_input: id
+                    }));
+                    tg.close();
+                } else {
+                    showError('فشل في تحديث الطلب');
+                }
+            } catch (error) {
+                console.error('خطأ:', error);
+                showError('حدث خطأ في إتمام الطلب');
+            }
         });
 
+        // إلغاء
         cancelBtn.addEventListener('click', () => {
             tg.close();
         });
 
-        fetchProduct();
+        // بدء التحميل
+        if (!productId || !orderUuid) {
+            productNameEl.textContent = 'خطأ: معاملات ناقصة';
+        } else {
+            loadProduct();
+        }
     </script>
 </body>
 </html>
